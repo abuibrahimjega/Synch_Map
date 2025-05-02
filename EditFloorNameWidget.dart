@@ -1,9 +1,10 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
-import 'DBConnection.dart';
-import 'Login.dart';
-import './ApiService.dart'; // Import the ApiService
+import '../DBConnection.dart';
+import '../Login.dart';
+import 'package:http/http.dart' as http;
+import 'package:path/path.dart';
 
 class EditFloorNameWidget extends StatefulWidget {
   const EditFloorNameWidget({super.key});
@@ -19,7 +20,6 @@ class _EditFloorNameWidgetState extends State<EditFloorNameWidget> {
   File? _selectedImage;
   String _message = '';
   bool _isLoading = false;
-  bool _isProcessingImage = false;
 
   Future<void> _pickImage() async {
     final pickedFile =
@@ -31,26 +31,36 @@ class _EditFloorNameWidgetState extends State<EditFloorNameWidget> {
     }
   }
 
-  Future<String?> _uploadImage() async {
+  Future<String?> _processImage() async {
     if (_selectedImage == null) return null;
 
-    setState(() => _isProcessingImage = true);
+    const serverUrl = 'http://192.168.1.14:5000/remove-text';
 
     try {
-      // Apply text removal to the selected image first
-      final processedImage =
-          await ApiService.removeTextFromImage(_selectedImage!);
+      var request = http.MultipartRequest('POST', Uri.parse(serverUrl));
+      request.files.add(await http.MultipartFile.fromPath(
+        'image',
+        _selectedImage!.path,
+        filename: basename(_selectedImage!.path),
+      ));
+      
+      // Add required parameters for text removal
+      request.fields['languages'] = 'en';
+      request.fields['inpaint_radius'] = '3';
 
-      // Use the processed image if available, otherwise use the original
-      final imageToUpload = processedImage ?? _selectedImage!;
-
-      // Upload the image (processed or original)
-      return await ApiService.uploadImage(imageToUpload);
-    } catch (e) {
-      print('Upload error: $e');
+      var response = await request.send();
+      
+      if (response.statusCode == 200) {
+        // Save processed image locally
+        final bytes = await response.stream.toBytes();
+        final String localPath = '${_selectedImage!.path}_processed.jpg';
+        await File(localPath).writeAsBytes(bytes);
+        return localPath;
+      }
       return null;
-    } finally {
-      setState(() => _isProcessingImage = false);
+    } catch (e) {
+      print('Processing error: $e');
+      return null;
     }
   }
 
@@ -79,8 +89,7 @@ class _EditFloorNameWidgetState extends State<EditFloorNameWidget> {
     final isOwner = await DBConnection.isUserMapOwner(userId, mapId);
 
     if (!(isAdmin || isOwner)) {
-      setState(
-          () => _message = 'You do not have permission to edit this floor.');
+      setState(() => _message = 'You do not have permission to edit this floor.');
       return;
     }
 
@@ -89,8 +98,8 @@ class _EditFloorNameWidgetState extends State<EditFloorNameWidget> {
     try {
       String? imagePath;
       if (_selectedImage != null) {
-        imagePath = await _uploadImage();
-        if (imagePath == null) throw Exception('Image upload failed');
+        imagePath = await _processImage();
+        if (imagePath == null) throw Exception('Image processing failed');
       }
 
       final success = await DBConnection.editFloorInfo(
@@ -150,25 +159,13 @@ class _EditFloorNameWidgetState extends State<EditFloorNameWidget> {
             ),
             const SizedBox(height: 16),
             ElevatedButton(
-              onPressed: _isProcessingImage ? null : _pickImage,
+              onPressed: _pickImage,
               child: Text(_selectedImage == null
                   ? 'Select New Floor Image (optional)'
                   : 'New Image Selected'),
             ),
             if (_selectedImage != null)
-              Column(
-                children: [
-                  const SizedBox(height: 10),
-                  _isProcessingImage
-                      ? const CircularProgressIndicator(strokeWidth: 2)
-                      : Image.file(_selectedImage!, height: 100),
-                  const SizedBox(height: 8),
-                  const Text(
-                    'Note: Text in the image will be automatically removed',
-                    style: TextStyle(fontSize: 12, color: Colors.grey),
-                  ),
-                ],
-              ),
+              Image.file(_selectedImage!, height: 100),
             const SizedBox(height: 20),
             _isLoading
                 ? const CircularProgressIndicator()
